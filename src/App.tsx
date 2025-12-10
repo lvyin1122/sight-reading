@@ -738,6 +738,10 @@ function App() {
         <span>Buy me a coffee</span>
       </button>
 
+      <footer className="footer">
+        <p>Copyright © {new Date().getFullYear()} Sight-Reading Generator. All rights reserved.</p>
+      </footer>
+
       {showSupportModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Support the creator">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
