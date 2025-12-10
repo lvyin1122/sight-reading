@@ -746,8 +746,8 @@ function App() {
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Support the creator">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Buy me a coffee</h3>
+            <span>解锁更多后续功能，助力更多实用工具，感谢您的支持！</span>
             <p className="hint">Scan the QR code below to support this project.</p>
-            <p className="hint">Every little bit helps!</p>
             <div className="qr-placeholder large" aria-label="Buy me a coffee QR placeholder">
               <img src={coffeeImg} alt="Buy me a coffee" className="qr-image" />
             </div>
