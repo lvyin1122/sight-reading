@@ -449,7 +449,7 @@ function App() {
   const metronomeIntervalRef = useRef<number | null>(null)
   const metronomeAudioCtxRef = useRef<AudioContext | null>(null)
   const resolvedLanguage = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0]
-  const activeLanguage = languageOptions.some((lang) => lang.code === resolvedLanguage) ? resolvedLanguage : 'en'
+  const activeLanguage = languageOptions.some((lang) => lang.code === resolvedLanguage) ? resolvedLanguage : 'zh'
   const locale = i18n.resolvedLanguage || i18n.language || 'en'
 
   useEffect(() => {
