@@ -14,6 +14,36 @@
   gap: 1rem;
 }
 
+.language-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+
+.language-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  color: #111827;
+}
+
+.language-select select {
+  min-width: 160px;
+  padding: 0.5rem 0.65rem;
+}
+
+.language-note {
+  margin: 0;
+  color: #4b5563;
+  font-size: 0.95rem;
+}
+
 .header-actions {
   display: flex;
   align-items: flex-start;
@@ -80,6 +110,55 @@
 
 .field-group input {
   width: 100%;
+}
+
+.tempo-input-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tempo-input-group input {
+  flex: 1;
+}
+
+.metronome-btn {
+  padding: 0.5rem;
+  min-width: 44px;
+  background: #6b7280;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 150ms ease, box-shadow 150ms ease, transform 120ms ease;
+}
+
+.metronome-btn:hover {
+  background: #4b5563;
+  transform: translateY(-1px);
+}
+
+.metronome-btn svg {
+  width: 28px;
+  height: 28px;
+}
+
+.metronome-btn.blinking {
+  background: #10b981;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.6), 0 0 40px rgba(16, 185, 129, 0.4);
+  animation: metronome-pulse 150ms ease-out;
+}
+
+@keyframes metronome-pulse {
+  0% {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.6), 0 0 40px rgba(16, 185, 129, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.3), 0 0 20px rgba(16, 185, 129, 0.2);
+  }
 }
 
 .dual-inputs {
@@ -305,6 +384,35 @@ button.danger {
   justify-content: flex-end;
 }
 
+.contact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin: 0.5rem 0;
+}
+
+.contact-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.contact-label {
+  font-weight: 600;
+  color: #374151;
+  min-width: 80px;
+}
+
+.contact-value {
+  color: #111827;
+  font-weight: 500;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -403,6 +511,19 @@ button.danger {
 @media (max-width: 640px) {
   .header {
     flex-direction: column;
+  }
+
+  .language-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .language-select select {
+    width: 100%;
+  }
+
+  .language-note {
+    width: 100%;
   }
 
   .page {

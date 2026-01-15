@@ -8,9 +8,11 @@ import {
   HiTrash,
 } from 'react-icons/hi2'
 import { BiCoffee } from 'react-icons/bi'
+import { useTranslation } from 'react-i18next'
 import { Accidental, Formatter, KeyManager, Renderer, Stave, StaveNote, Voice } from 'vexflow'
 import './App.css'
 import coffeeImg from './assets/coffee.png'
+import MetronomeIcon from './components/MetronomeIcon'
 
 type Duration = 'q' | '8' | 'h'
 
@@ -30,6 +32,8 @@ type GeneratedScore = {
   measures: NoteSpec[][]
   createdAt: number
   noteDensity: number
+  highestPitch?: string
+  lowestPitch?: string
 }
 
 const STORAGE_KEY = 'sight-reading-scores'
@@ -75,11 +79,33 @@ const durationPool: { duration: Duration; beats: number; eighths: number }[] = [
 
 const timeSignatureOptions = ['4/4', '3/4', '2/4', '6/8', '12/8', '5/4', '7/8']
 
+// Generate pitch options for dropdown (C2 to C7, with sharps and flats)
+function generatePitchOptions(): string[] {
+  const notes = ['C', 'C#', 'D', 'D#', 'Eb', 'E', 'F', 'F#', 'G', 'G#', 'Ab', 'A', 'A#', 'Bb', 'B']
+  const octaves = [2, 3, 4, 5, 6, 7]
+  const options: string[] = []
+  
+  for (const octave of octaves) {
+    for (const note of notes) {
+      options.push(`${note}${octave}`)
+    }
+  }
+  
+  return options
+}
+
+const pitchOptions = generatePitchOptions()
+
 const durationToBeats: Record<Duration, number> = {
   q: 1,
   '8': 0.5,
   h: 2,
 }
+
+const languageOptions = [
+  { code: 'en', label: 'English' },
+  { code: 'zh', label: '中文' },
+]
 
 function randomChoice<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)]
@@ -108,13 +134,76 @@ function parseTimeSignature(timeSig: string) {
   return { numerator, denominator, quarterBeatsPerMeasure, eighthsPerMeasure }
 }
 
-function generateMeasures(key: string, bars: number, timeSig: string, noteDensity: number): NoteSpec[][] {
+function parsePitch(pitch: string): { midi: number; octave: number; note: string } | null {
+  // Parse formats like "C4", "G#5", "Bb3", etc.
+  const match = pitch.match(/^([A-G])([#b]*)(\d+)$/i)
+  if (!match) return null
+  
+  const letter = match[1].toLowerCase()
+  const accidentals = match[2]
+  const octave = Number(match[3])
+  
+  const baseOffsets: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
+  const base = baseOffsets[letter] ?? 0
+  
+  let accidentalOffset = 0
+  if (accidentals === '#') accidentalOffset = 1
+  else if (accidentals === '##') accidentalOffset = 2
+  else if (accidentals === 'b') accidentalOffset = -1
+  else if (accidentals === 'bb') accidentalOffset = -2
+  
+  const midi = (octave + 1) * 12 + base + accidentalOffset
+  return { midi, octave, note: letter }
+}
+
+function noteToMidi(noteKey: string): number {
+  const [rawNote, octaveStr] = noteKey.split('/')
+  const octave = Number(octaveStr)
+  if (!rawNote || Number.isNaN(octave)) return 60 // Middle C
+  
+  const letter = rawNote[0]?.toLowerCase()
+  const accidentals = rawNote.slice(1)
+  const baseOffsets: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }
+  const base = baseOffsets[letter] ?? 0
+  
+  let accidentalOffset = 0
+  if (accidentals === '#') accidentalOffset = 1
+  else if (accidentals === '##') accidentalOffset = 2
+  else if (accidentals === 'b') accidentalOffset = -1
+  else if (accidentals === 'bb') accidentalOffset = -2
+  
+  return (octave + 1) * 12 + base + accidentalOffset
+}
+
+function generateMeasures(
+  key: string,
+  bars: number,
+  timeSig: string,
+  noteDensity: number,
+  lowestPitch?: string,
+  highestPitch?: string,
+): NoteSpec[][] {
   const keyManager = new KeyManager(key)
   const { eighthsPerMeasure } = parseTimeSignature(timeSig)
   const baseNotes = ['c', 'd', 'e', 'f', 'g', 'a', 'b']
   const safeDensity = Number.isFinite(noteDensity) ? noteDensity : 70
   const densityRatio = Math.max(0, Math.min(1, safeDensity / 100))
   const restChance = Math.max(0, Math.min(0.4, 0.4 - densityRatio * 0.35))
+
+  // Parse pitch constraints
+  const lowestMidi = lowestPitch ? parsePitch(lowestPitch)?.midi ?? 48 : 48 // C4 default
+  const highestMidi = highestPitch ? parsePitch(highestPitch)?.midi ?? 84 : 84 // C6 default
+
+  // Determine valid octaves and notes based on pitch range
+  const validOctaves: number[] = []
+  for (let oct = 2; oct <= 7; oct += 1) {
+    const minMidiInOctave = (oct + 1) * 12 // C in this octave
+    const maxMidiInOctave = (oct + 1) * 12 + 11 // B in this octave
+    if (maxMidiInOctave >= lowestMidi && minMidiInOctave <= highestMidi) {
+      validOctaves.push(oct)
+    }
+  }
+  if (validOctaves.length === 0) validOctaves.push(4) // Fallback
 
   const measures: NoteSpec[][] = []
 
@@ -143,9 +232,54 @@ function generateMeasures(key: string, bars: number, timeSig: string, noteDensit
       })
 
       const choice = weightedChoice(allowedDurations, weights)
-      const octave = randomChoice([4, 5])
-      const letter = randomChoice(baseNotes)
-      const selection = keyManager.selectNote(letter)
+      
+      // Generate note within pitch range
+      let noteGenerated = false
+      let attempts = 0
+      let octave = validOctaves[0]
+      let letter = baseNotes[0]
+      let selection = keyManager.selectNote(letter)
+      
+      while (!noteGenerated && attempts < 50) {
+        octave = randomChoice(validOctaves)
+        letter = randomChoice(baseNotes)
+        selection = keyManager.selectNote(letter)
+        const noteKey = `${selection.note}/${octave}`
+        const midi = noteToMidi(noteKey)
+        
+        if (midi >= lowestMidi && midi <= highestMidi) {
+          noteGenerated = true
+        } else {
+          attempts += 1
+        }
+      }
+      
+      // Fallback if we couldn't generate a valid note - try to find any valid note
+      if (!noteGenerated) {
+        let found = false
+        for (const testOctave of validOctaves) {
+          for (const testLetter of baseNotes) {
+            const testSelection = keyManager.selectNote(testLetter)
+            const testNoteKey = `${testSelection.note}/${testOctave}`
+            const testMidi = noteToMidi(testNoteKey)
+            if (testMidi >= lowestMidi && testMidi <= highestMidi) {
+              octave = testOctave
+              letter = testLetter
+              selection = testSelection
+              found = true
+              break
+            }
+          }
+          if (found) break
+        }
+        // If still not found, use middle octave and first note (should rarely happen)
+        if (!found) {
+          octave = validOctaves[Math.floor(validOctaves.length / 2)]
+          letter = baseNotes[0]
+          selection = keyManager.selectNote(letter)
+        }
+      }
+      
       const insertRest = Math.random() < restChance
 
       measure.push({
@@ -271,12 +405,14 @@ function loadCollection(): GeneratedScore[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const parsed = raw
-      ? (JSON.parse(raw) as Array<GeneratedScore & { timeSig?: string; noteDensity?: number }>)
+      ? (JSON.parse(raw) as Array<GeneratedScore & { timeSig?: string; noteDensity?: number; lowestPitch?: string; highestPitch?: string }>)
       : []
     return parsed.map((item) => ({
       ...item,
       timeSig: item.timeSig ?? '4/4',
       noteDensity: Number.isFinite(item.noteDensity) ? item.noteDensity : 70,
+      lowestPitch: item.lowestPitch ?? 'C4',
+      highestPitch: item.highestPitch ?? 'G5',
     }))
   } catch (err) {
     console.warn('Failed to load saved scores', err)
@@ -289,14 +425,19 @@ function persistCollection(items: GeneratedScore[]) {
 }
 
 function App() {
+  const { t, i18n } = useTranslation()
   const [keySig, setKeySig] = useState('C')
   const [bars, setBars] = useState(4)
   const [tempo, setTempo] = useState(100)
   const [timeSig, setTimeSig] = useState('4/4')
   const [noteDensity, setNoteDensity] = useState(70)
+  const [lowestPitch, setLowestPitch] = useState('C4')
+  const [highestPitch, setHighestPitch] = useState('G5')
   const [score, setScore] = useState<GeneratedScore | null>(null)
   const [previousScore, setPreviousScore] = useState<GeneratedScore | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isMetronomePlaying, setIsMetronomePlaying] = useState(false)
+  const [isMetronomeBlinking, setIsMetronomeBlinking] = useState(false)
   const [collection, setCollection] = useState<GeneratedScore[]>(() => loadCollection())
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent)
   const isAndroid = /android/i.test(navigator.userAgent)
@@ -305,9 +446,21 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const playTimeoutRef = useRef<number | null>(null)
+  const metronomeIntervalRef = useRef<number | null>(null)
+  const metronomeAudioCtxRef = useRef<AudioContext | null>(null)
+  const resolvedLanguage = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0]
+  const activeLanguage = languageOptions.some((lang) => lang.code === resolvedLanguage) ? resolvedLanguage : 'en'
+  const locale = i18n.resolvedLanguage || i18n.language || 'en'
+
+  useEffect(() => {
+    const lang = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0]
+    document.documentElement.lang = lang
+  }, [i18n.resolvedLanguage, i18n.language])
+
   useEffect(() => {
     drawScore(score, containerRef.current)
   }, [score])
+
   useEffect(() => {
     return () => {
       if (playTimeoutRef.current) {
@@ -315,6 +468,12 @@ function App() {
       }
       if (audioCtxRef.current) {
         audioCtxRef.current.close()
+      }
+      if (metronomeIntervalRef.current) {
+        window.clearInterval(metronomeIntervalRef.current)
+      }
+      if (metronomeAudioCtxRef.current) {
+        metronomeAudioCtxRef.current.close()
       }
     }
   }, [])
@@ -327,9 +486,13 @@ function App() {
     return () => window.removeEventListener('resize', handleResize)
   }, [score])
 
+  const handleLanguageChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    i18n.changeLanguage(event.target.value)
+  }
+
   const handleGenerate = () => {
     setPreviousScore(score)
-    const measures = generateMeasures(keySig, bars, timeSig, noteDensity)
+    const measures = generateMeasures(keySig, bars, timeSig, noteDensity, lowestPitch, highestPitch)
     const nextScore: GeneratedScore = {
       id: crypto.randomUUID(),
       key: keySig,
@@ -337,6 +500,8 @@ function App() {
       tempo,
       timeSig,
       noteDensity,
+      lowestPitch,
+      highestPitch,
       measures,
       createdAt: Date.now(),
     }
@@ -381,7 +546,7 @@ function App() {
   const handleSave = () => {
     if (!score) return
     if (collection.some((item) => item.id === score.id)) {
-      window.alert('Score already exists in collection.')
+      window.alert(t('alerts.duplicate'))
       return
     }
     const updated = [score, ...collection].slice(0, 30)
@@ -399,6 +564,8 @@ function App() {
       setTempo(found.tempo)
       setTimeSig(found.timeSig)
       setNoteDensity(found.noteDensity ?? 70)
+      setLowestPitch(found.lowestPitch ?? 'C4')
+      setHighestPitch(found.highestPitch ?? 'G5')
     }
   }
 
@@ -421,6 +588,8 @@ function App() {
     const tempoNum = Number(data.tempo)
     if (!Number.isFinite(tempoNum)) return null
     const densityNum = Number.isFinite(Number(data.noteDensity)) ? Number(data.noteDensity) : 70
+    const lowestPitchStr = typeof data.lowestPitch === 'string' ? data.lowestPitch : 'C4'
+    const highestPitchStr = typeof data.highestPitch === 'string' ? data.highestPitch : 'G5'
 
     const measuresRaw = Array.isArray(data.measures) ? data.measures : null
     if (!measuresRaw) return null
@@ -456,6 +625,8 @@ function App() {
       tempo: tempoNum,
       timeSig: data.timeSig,
       noteDensity: densityNum,
+      lowestPitch: lowestPitchStr,
+      highestPitch: highestPitchStr,
       measures: normalizedMeasures,
       createdAt: data.createdAt && Number.isFinite(Number(data.createdAt)) ? Number(data.createdAt) : Date.now(),
     }
@@ -474,7 +645,7 @@ function App() {
       const parsed = JSON.parse(text)
       const imported = normalizeImportedScore(parsed)
       if (!imported) {
-        window.alert('Invalid score file. Please select a JSON file exported from this app.')
+        window.alert(t('alerts.importInvalid'))
         return
       }
 
@@ -485,6 +656,8 @@ function App() {
       setTempo(imported.tempo)
       setTimeSig(imported.timeSig)
       setNoteDensity(imported.noteDensity)
+      setLowestPitch(imported.lowestPitch ?? 'C4')
+      setHighestPitch(imported.highestPitch ?? 'G5')
 
       const filtered = collection.filter((c) => c.id !== imported.id)
       const updated = [imported, ...filtered].slice(0, 30)
@@ -492,7 +665,7 @@ function App() {
       persistCollection(updated)
     } catch (err) {
       console.error('Failed to load score file', err)
-      window.alert('Failed to load score file. Please ensure it is valid JSON.')
+      window.alert(t('alerts.importFailed'))
     } finally {
       event.target.value = ''
     }
@@ -518,11 +691,11 @@ function App() {
 
   const handleAddToHome = () => {
     if (isIos) {
-      window.alert('On iOS Safari: tap Share → Add to Home Screen.')
+      window.alert(t('alerts.addToHomeIos'))
     } else if (isAndroid) {
-      window.alert('In Chrome: Menu → Add to Home screen.')
+      window.alert(t('alerts.addToHomeAndroid'))
     } else {
-      window.alert('Open this app on your mobile browser to add it to your home screen.')
+      window.alert(t('alerts.addToHomeOther'))
     }
   }
 
@@ -535,26 +708,128 @@ function App() {
     setScore(previousScore)
     setKeySig(previousScore.key)
     setBars(previousScore.bars)
-    setTempo(previousScore.tempo)
-    setTimeSig(previousScore.timeSig)
-    setNoteDensity(previousScore.noteDensity ?? 70)
-    setPreviousScore(current)
+      setTempo(previousScore.tempo)
+      setTimeSig(previousScore.timeSig)
+      setNoteDensity(previousScore.noteDensity ?? 70)
+      setLowestPitch(previousScore.lowestPitch ?? 'C4')
+      setHighestPitch(previousScore.highestPitch ?? 'G5')
+      setPreviousScore(current)
   }
+
+  const playMetronomeClick = async () => {
+    try {
+      if (!metronomeAudioCtxRef.current) {
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+        metronomeAudioCtxRef.current = new AudioCtx()
+      }
+      const context = metronomeAudioCtxRef.current
+      const osc = context.createOscillator()
+      const gain = context.createGain()
+      
+      osc.type = 'sine'
+      osc.frequency.value = 800
+      
+      const now = context.currentTime
+      gain.gain.setValueAtTime(0, now)
+      gain.gain.linearRampToValueAtTime(0.3, now + 0.001)
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1)
+      
+      osc.connect(gain).connect(context.destination)
+      osc.start(now)
+      osc.stop(now + 0.1)
+    } catch (err) {
+      console.warn('Failed to play metronome click', err)
+    }
+  }
+
+  const handleMetronomeToggle = async () => {
+    if (isMetronomePlaying) {
+      // Stop metronome
+      if (metronomeIntervalRef.current) {
+        window.clearInterval(metronomeIntervalRef.current)
+        metronomeIntervalRef.current = null
+      }
+      setIsMetronomePlaying(false)
+      setIsMetronomeBlinking(false)
+    } else {
+      // Start metronome
+      const beatsPerMinute = tempo
+      const intervalMs = (60 / beatsPerMinute) * 1000
+      
+      // Play first click immediately
+      await playMetronomeClick()
+      setIsMetronomeBlinking(true)
+      setTimeout(() => setIsMetronomeBlinking(false), 150)
+      
+      // Set up interval for subsequent clicks
+      metronomeIntervalRef.current = window.setInterval(async () => {
+        await playMetronomeClick()
+        setIsMetronomeBlinking(true)
+        setTimeout(() => setIsMetronomeBlinking(false), 150)
+      }, intervalMs)
+      
+      setIsMetronomePlaying(true)
+    }
+  }
+
+  // Restart metronome when tempo changes (if it's currently playing)
+  useEffect(() => {
+    if (isMetronomePlaying && metronomeIntervalRef.current) {
+      // Clear existing interval
+      window.clearInterval(metronomeIntervalRef.current)
+      metronomeIntervalRef.current = null
+      
+      // Restart with new tempo
+      const beatsPerMinute = tempo
+      const intervalMs = (60 / beatsPerMinute) * 1000
+      
+      // Play click immediately and start blinking
+      playMetronomeClick()
+      setIsMetronomeBlinking(true)
+      setTimeout(() => setIsMetronomeBlinking(false), 150)
+      
+      // Set up new interval
+      metronomeIntervalRef.current = window.setInterval(async () => {
+        await playMetronomeClick()
+        setIsMetronomeBlinking(true)
+        setTimeout(() => setIsMetronomeBlinking(false), 150)
+      }, intervalMs)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tempo])
 
   return (
     <div className="page">
+      <div className="language-bar" role="navigation" aria-label={t('language.label')}>
+        <div className="language-select">
+          <label htmlFor="language-select">{t('language.label')}</label>
+          <select
+            id="language-select"
+            value={activeLanguage}
+            onChange={handleLanguageChange}
+            aria-label={t('language.label')}
+          >
+            {languageOptions.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       <header className="header">
         <div>
-          <h1>Sight-Reading Generator</h1>
-          <p>Create quick practice sheets and keep the ones you like.</p>
+          <h1>{t('header.title')}</h1>
+          <p>{t('header.subtitle')}</p>
         </div>
         <div className="header-actions">
           <button className="secondary icon-btn" onClick={handleAddToHome}>
-            Add to Home
+            {t('actions.addToHome')}
           </button>
           <button className="secondary icon-btn" onClick={handleImportClick}>
             <HiArrowDownTray aria-hidden="true" />
-            <span>Import Score</span>
+            <span>{t('actions.importScore')}</span>
           </button>
           <input
             ref={fileInputRef}
@@ -562,13 +837,14 @@ function App() {
             accept="application/json,.json"
             className="sr-only"
             onChange={handleFileSelected}
+            aria-label={t('actions.importScore')}
           />
         </div>
       </header>
 
       <section className="controls">
         <div className="field">
-          <label htmlFor="key">Key</label>
+          <label htmlFor="key">{t('controls.key')}</label>
           <select id="key" value={keySig} onChange={(e) => setKeySig(e.target.value)}>
             {keyOptions.map((k) => (
               <option key={k} value={k}>
@@ -579,7 +855,7 @@ function App() {
         </div>
 
         <div className="field">
-          <label htmlFor="timeSig">Time signature</label>
+          <label htmlFor="timeSig">{t('controls.timeSig')}</label>
           <select id="timeSig" value={timeSig} onChange={(e) => setTimeSig(e.target.value)}>
             {timeSignatureOptions.map((sig) => (
               <option key={sig} value={sig}>
@@ -591,7 +867,39 @@ function App() {
 
         <div className="field field-group">
           <div className="field-inline">
-            <label htmlFor="bars">Bars</label>
+            <label htmlFor="lowestPitch">{t('controls.lowestPitch')}</label>
+            <select
+              id="lowestPitch"
+              value={lowestPitch}
+              onChange={(e) => setLowestPitch(e.target.value)}
+            >
+              {pitchOptions.map((pitch) => (
+                <option key={pitch} value={pitch}>
+                  {pitch}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field-inline">
+            <label htmlFor="highestPitch">{t('controls.highestPitch')}</label>
+            <select
+              id="highestPitch"
+              value={highestPitch}
+              onChange={(e) => setHighestPitch(e.target.value)}
+            >
+              {pitchOptions.map((pitch) => (
+                <option key={pitch} value={pitch}>
+                  {pitch}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="field field-group">
+          <div className="field-inline">
+            <label htmlFor="bars">{t('controls.bars')}</label>
             <input
               id="bars"
               type="number"
@@ -603,20 +911,30 @@ function App() {
           </div>
 
           <div className="field-inline">
-            <label htmlFor="tempo">Tempo (BPM)</label>
-            <input
-              id="tempo"
-              type="number"
-              min={40}
-              max={220}
-              value={tempo}
-              onChange={(e) => setTempo(Number(e.target.value))}
-            />
+            <label htmlFor="tempo">{t('controls.tempo')}</label>
+            <div className="tempo-input-group">
+              <input
+                id="tempo"
+                type="number"
+                min={1}
+                max={220}
+                value={tempo}
+                onChange={(e) => setTempo(Number(e.target.value || 1))}
+              />
+              <button
+                className={`metronome-btn ${isMetronomeBlinking ? 'blinking' : ''}`}
+                onClick={handleMetronomeToggle}
+                aria-label={isMetronomePlaying ? 'Stop metronome' : 'Start metronome'}
+                title={isMetronomePlaying ? 'Stop metronome' : 'Start metronome'}
+              >
+                <MetronomeIcon size={30} color={isMetronomeBlinking ? '#10b981' : '#4b5563'} />
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="field">
-          <label htmlFor="noteDensity">Note density</label>
+          <label htmlFor="noteDensity">{t('controls.noteDensity')}</label>
           <div className="dual-inputs">
             <input
               id="noteDensity"
@@ -633,7 +951,7 @@ function App() {
               max={100}
               value={noteDensity}
               onChange={(e) => setNoteDensity(Math.max(0, Math.min(100, Number(e.target.value))))}
-              aria-label="Note density value"
+              aria-label={t('controls.noteDensityValue')}
             />
           </div>
         </div>
@@ -641,47 +959,48 @@ function App() {
         <div className="actions">
           <button className="primary icon-btn" onClick={handleGenerate}>
             <HiSparkles aria-hidden="true" />
-            <span>Generate</span>
+            <span>{t('controls.generate')}</span>
           </button>
         </div>
       </section>
 
       <section className="score-panel">
         <div className="panel-header">
-          <h2>Score</h2>
+          <h2>{t('score.title')}</h2>
           {score ? (
             <div className="meta">
               <span>{score.key}</span>
-              <span>{score.bars} bars</span>
+              <span>{t('score.bars', { count: score.bars })}</span>
               <span>{score.timeSig}</span>
-              <span>{score.tempo} BPM</span>
-              <span>{score.noteDensity}% density</span>
+              <span>{t('score.tempo', { count: score.tempo })}</span>
+              <span>{t('score.density', { percent: score.noteDensity })}</span>
             </div>
           ) : (
-            <span className="hint">Generate a score to preview notation</span>
+            <span className="hint">{t('score.hint')}</span>
           )}
         </div>
         <div
           className={`score-container ${score ? 'clickable' : ''}`}
           ref={containerRef}
           onClick={handleScoreClick}
-          title={score ? 'Click to generate another score' : undefined}
+          title={score ? t('score.regenerateTooltip') : undefined}
+          aria-label={score ? t('score.regenerateTooltip') : undefined}
         />
         {score && (
           <>
-            <p className="hint score-hint">Tip: click the score to generate a new one.</p>
+            <p className="hint score-hint">{t('score.tip')}</p>
             <div className="actions score-actions">
               <button className="secondary icon-btn" onClick={handleRevert} disabled={!previousScore}>
                 <HiArrowUturnLeft aria-hidden="true" />
-                <span>Previous</span>
+                <span>{t('playback.previous')}</span>
               </button>
               <button className="secondary icon-btn" onClick={handlePlay} disabled={isPlaying}>
                 <HiPlay aria-hidden="true" />
-                <span>{isPlaying ? 'Playing…' : 'Play'}</span>
+                <span>{isPlaying ? t('playback.playing') : t('playback.play')}</span>
               </button>
               <button className="secondary icon-btn" onClick={handleSave}>
                 <HiBookmark aria-hidden="true" />
-                <span>Save</span>
+                <span>{t('playback.save')}</span>
               </button>
             </div>
           </>
@@ -690,39 +1009,37 @@ function App() {
 
       <section className="collection-panel">
         <div className="panel-header">
-          <h2>Library</h2>
-          <span className="hint">Most recent first (stored locally)</span>
+          <h2>{t('library.title')}</h2>
+          <span className="hint">{t('library.hint')}</span>
         </div>
         {collection.length === 0 ? (
-          <p className="hint">No saved scores yet. Save ones you like.</p>
+          <p className="hint">{t('library.empty')}</p>
         ) : (
           <ul className="collection-list">
             {collection.map((item) => (
               <li key={item.id} className="collection-item">
                 <div className="collection-info">
                   <div className="title">
-                    {item.key} — {item.bars} bars — {item.timeSig} @ {item.tempo} BPM
+                    {item.key} — {t('score.bars', { count: item.bars })} — {item.timeSig} @ {t('score.tempo', { count: item.tempo })}
                   </div>
-                  <div className="timestamp">
-                    {new Date(item.createdAt).toLocaleString()}
-                  </div>
+                  <div className="timestamp">{new Date(item.createdAt).toLocaleString(locale)}</div>
                 </div>
                 <div className="collection-actions">
-                  <button onClick={() => handleLoad(item.id)}>Apply</button>
+                  <button onClick={() => handleLoad(item.id)}>{t('library.apply')}</button>
                   <button
                     className="icon-only"
                     onClick={() => handleDownload(item)}
-                    aria-label="Download score"
-                    title="Download score"
+                    aria-label={t('library.export')}
+                    title={t('library.export')}
                   >
                     <HiArrowDownTray aria-hidden="true" />
-                    <span>Export</span>
+                    <span>{t('library.export')}</span>
                   </button>
                   <button
                     className="danger icon-only"
                     onClick={() => handleDelete(item.id)}
-                    aria-label="Delete score"
-                    title="Delete score"
+                    aria-label={t('library.delete')}
+                    title={t('library.delete')}
                   >
                     <HiTrash aria-hidden="true" />
                   </button>
@@ -735,32 +1052,42 @@ function App() {
 
       <button className="secondary icon-btn" onClick={handleBuyCoffee}>
         <BiCoffee className="icon" />
-        <span>Buy me a coffee</span>
+        <span>{t('actions.buyCoffee')}</span>
       </button>
 
       <footer className="footer">
-        <p>Copyright © {new Date().getFullYear()} Sight-Reading Generator. All rights reserved.</p>
+        <p>{t('footer.text', { year: new Date().getFullYear() })}</p>
       </footer>
 
       {showSupportModal && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Support the creator">
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('actions.buyCoffee')}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Buy me a coffee</h3>
-            <span>解锁更多后续功能，助力更多实用工具，感谢您的支持！</span>
-            <p className="hint">Scan the QR code below to support this project.</p>
-            <div className="qr-placeholder large" aria-label="Buy me a coffee QR placeholder">
-              <img src={coffeeImg} alt="Buy me a coffee" className="qr-image" />
+            <h3>{t('support.title')}</h3>
+            <span>{t('support.desc')}</span>
+            <p className="hint">{t('support.hint')}</p>
+            <div className="contact-info">
+              <div className="contact-item">
+                <span className="contact-label">{t('support.wechatID')}:</span>
+                <span className="contact-value">stonagwang</span>
+              </div>
+              <div className="contact-item">
+                <span className="contact-label">{t('support.email')}:</span>
+                <span className="contact-value">{t('support.emailValue')}</span>
+              </div>
             </div>
-          <div className="actions modal-actions">
-            <button className="secondary" onClick={handleCloseSupport}>
-              Close
-            </button>
-          </div>
+            <div className="qr-placeholder large" aria-label={t('actions.buyCoffee')}>
+              <img src={coffeeImg} alt={t('actions.buyCoffee')} className="qr-image" />
+            </div>
+            <div className="actions modal-actions">
+              <button className="secondary" onClick={handleCloseSupport}>
+                {t('actions.close')}
+              </button>
+            </div>
           </div>
         </div>
       )}
     </div>
-  );
+  )
 }
 
-export default App;
+export default App
